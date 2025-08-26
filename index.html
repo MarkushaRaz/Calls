@@ -1,16 +1,102 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Minimal VoIP</title>
+    <meta charset="UTF-8">
+    <title>VoIP Звонок (Локальный тест)</title>
+    <style>
+        body { font-family: sans-serif; background: #f0f0f0; display: flex; flex-direction: column; align-items: center; }
+        video { border: 2px solid #333; background: #000; margin-top: 10px; }
+        button { font-size: 16px; padding: 10px 15px; margin: 5px; cursor: pointer; }
+    </style>
 </head>
 <body>
-  <h1>Minimal VoIP</h1>
-  <button id="callBtn">Start</button>
-  <audio id="remoteAudio" autoplay></audio>
-  <div id="log" style="white-space: pre-wrap; border: 1px solid #ccc; padding: 10px; margin-top: 10px; height: 200px; overflow-y: auto;"></div>
+    <h1>Простой VoIP Звонок</h1>
+    <div>
+        <button id="startButton">Начать</button>
+        <button id="callButton" disabled>Позвонить</button>
+        <button id="hangupButton" disabled>Завершить</button>
+    </div>
+    <div>
+        <h3>Локальное аудио</h3>
+        <audio id="localAudio" controls autoplay muted></audio>
+        <h3>Удаленное аудио</h3>
+        <audio id="remoteAudio" controls autoplay></audio>
+    </div>
 
-  <script src="index.js"></script>
+    <script>
+        // ... (весь JS-код из предыдущего ответа остается здесь без изменений, кроме одной строки)
+
+        // МЕНЯЕМ ТОЛЬКО ЭТУ СТРОКУ:
+        const ws = new WebSocket('wss://sigmacalls.onrender.com/');
+
+        // ... (остальной JS-код такой же, как в предыдущих ответах)
+        const startButton = document.getElementById('startButton');
+        const callButton = document.getElementById('callButton');
+        const hangupButton = document.getElementById('hangupButton');
+        const localAudio = document.getElementById('localAudio');
+        const remoteAudio = document.getElementById('remoteAudio');
+
+        let localStream;
+        let peerConnection;
+
+        const configuration = {
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        };
+
+        startButton.onclick = async () => {
+            localStream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
+            localAudio.srcObject = localStream;
+            startButton.disabled = true;
+            callButton.disabled = false;
+        };
+
+        callButton.onclick = async () => {
+            callButton.disabled = true;
+            hangupButton.disabled = false;
+            peerConnection = new RTCPeerConnection(configuration);
+            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+            peerConnection.ontrack = event => {
+                remoteAudio.srcObject = event.streams[0];
+            };
+            peerConnection.onicecandidate = event => {
+                if (event.candidate) {
+                    ws.send(JSON.stringify({ 'candidate': event.candidate }));
+                }
+            };
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+            ws.send(JSON.stringify({ 'offer': offer }));
+        };
+        
+        hangupButton.onclick = () => {
+            peerConnection.close();
+            peerConnection = null;
+            hangupButton.disabled = true;
+            callButton.disabled = false;
+        };
+
+        ws.onmessage = async (event) => {
+            const message = JSON.parse(event.data);
+            if (message.offer) {
+                if (!peerConnection) {
+                    peerConnection = new RTCPeerConnection(configuration);
+                    localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+                    peerConnection.ontrack = e => remoteAudio.srcObject = e.streams[0];
+                    peerConnection.onicecandidate = e => {
+                        if (e.candidate) ws.send(JSON.stringify({ 'candidate': e.candidate }));
+                    };
+                }
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(message.offer));
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                ws.send(JSON.stringify({ 'answer': answer }));
+                hangupButton.disabled = false;
+            } else if (message.answer) {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(message.answer));
+            } else if (message.candidate) {
+                await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
+            }
+        };
+    </script>
 </body>
 </html>
